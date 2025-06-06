@@ -1,0 +1,11 @@
+Args in experiment:
+Namespace(AutoCon=False, AutoCon_lambda=1.0, AutoCon_multiscales=[96], AutoCon_wnorm='LastVal', activation='gelu', anomaly_ratio=0.25, batch_size=32, c_out=1, checkpoints='./checkpoints/', d_ff=128, d_layers=1, d_model=64, data='ETTh1', data_path='ETTh1.csv', dec_in=1, des='test', devices='0,1,2,3', distil=True, dropout=0.1, e_layers=3, embed='timeF', enc_in=1, factor=1, features='S', freq='h', gpu=0, is_training=1, itr=1, label_len=48, learning_rate=0.0005, loss='MSE', lradj='type1', mask_rate=0.25, model='AutoConNet', model_id='ETTh1_B_20250606_202056', moving_avg=25, n_heads=8, num_kernels=6, num_workers=4, output_attention=False, p_hidden_dims=[128, 128], p_hidden_layers=2, patience=10, pred_len=96, root_path='./dataset/ETT-small', save=False, seasonal_patterns='Monthly', seq_len=336, target='OT', task_name='long_term_forecast', top_k=5, train_epochs=50, train_ratio=0.6, use_amp=False, use_gpu=False, use_multi_gpu=False)
+Use CPU
+TimeFeatureEmbedding-wo-freq:   rm_idx= []
+model parameters:422691
+>>>>>>>start training : long_term_forecast_ETTh1_B_20250606_202056_AutoConNet_ETTh1_ftS_sl336_ll48_pl96_dm64_nh8_el3_dl1_df128_fc1_ebtimeF_dtTrue_test_0>>>>>>>>>>>>>>>>>>>>>>>>>>
+train  len=  8209
+val    len=  2449
+test   len=  2449
+	iters: 100, epoch: 1 | loss: 0.7002906
+	speed: 1.4602s/iter; left time: 18545.1s
