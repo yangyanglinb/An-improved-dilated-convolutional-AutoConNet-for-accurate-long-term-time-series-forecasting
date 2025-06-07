@@ -22,7 +22,7 @@ pct(){ awk -v b="$1" -v i="$2" 'BEGIN{ if(b==""||b=="0"||i==""){printf "0.00";} 
 
 DS=M5E
 DATA_ROOT=${DATA_ROOT:-"/content/drive/MyDrive/Colab Notebooks/Self-Supervised-Contrasitive-Data"}
-ROOT="$DATA_ROOT/M5/test"
+ROOT="$DATA_ROOT/M5"
 FILE=sales_train_evaluation.csv
 SL=336; PL=96; FT=M; CI=21; FREQ=h
 
