@@ -1,5 +1,3 @@
-# data_provider/data_loader.py
-
 import os, warnings
 import numpy as np
 import pandas as pd
@@ -49,7 +47,6 @@ def _auto_adjust_window(obj, n_total):
     """
     max_seq = n_total - obj.pred_len - 1
     if max_seq <= 0:
-        # 数据太少→至少保留 1 个样本
         obj.seq_len = max(1, n_total - obj.pred_len)
     else:
         obj.seq_len = min(obj.seq_len, max_seq)
@@ -78,52 +75,53 @@ class Dataset_ETT_hour(Dataset):
         self.__read_data__()
 
     def __read_data__(self):
-        self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
-        # 默认 ETT_hour 划分方式：12 个月前 训练，接下来 4 个月 验证，再接 4 个月 测试
         borders = [
             (0, 12 * 30 * 24),
             (12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24),
             (12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24)
         ]
-        border1, border2 = borders[self.set_type]
+        b1, b2 = borders[self.set_type]
 
-        # 数值列
+        # 提取原始数值数据列
         if self.features in ('M', 'MS'):
-            df_data = df_raw.iloc[:, 1:]  # 除 date 列外的所有列
-        else:  # 'S'
+            df_data = df_raw.iloc[:, 1:]
+        else:
             df_data = df_raw[[self.target]]
+        # 只保留数值列，剔除所有非数值列
+        df_data = df_data.select_dtypes(include=[np.number])
+        # 再次强制转换并填 NA
+        df_data = df_data.apply(pd.to_numeric, errors='coerce').fillna(0)
 
         # 归一化
         if self.scale:
-            self.scaler.fit(df_data.iloc[borders[0][0]:borders[0][1]].values)
-            data = self.scaler.transform(df_data.values)
+            scaler = StandardScaler()
+            scaler.fit(df_data.iloc[borders[0][0]:borders[0][1]].values)
+            data = scaler.transform(df_data.values)
+            self.scaler = scaler
         else:
             data = df_data.values
 
         # 构造时间戳特征
-        df_stamp = df_raw[['date']].iloc[border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp['date'])
-        data_stamp = _build_time_stamp(df_stamp['date'], self.freq, self.timeenc)
+        df_stamp = pd.to_datetime(df_raw['date'].iloc[b1:b2])
+        data_stamp = _build_time_stamp(df_stamp, self.freq, self.timeenc)
 
-        self.data_x = data[border1:border2]
+        self.data_x = data[b1:b2]
         self.data_y = self.data_x
         self.data_stamp = data_stamp
 
-        # 如果数据量太少，自动缩减 seq_len / label_len
         _auto_adjust_window(self, len(self.data_x))
 
     def __getitem__(self, idx):
-        s_begin, s_end = idx, idx + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = r_begin + self.label_len + self.pred_len
+        s, e = idx, idx + self.seq_len
+        r0 = e - self.label_len
+        r1 = r0 + self.label_len + self.pred_len
         return (
             idx,
-            self.data_x[s_begin:s_end],
-            self.data_y[r_begin:r_end],
-            self.data_stamp[s_begin:s_end],
-            self.data_stamp[r_begin:r_end]
+            self.data_x[s:e],
+            self.data_y[r0:r1],
+            self.data_stamp[s:e],
+            self.data_stamp[r0:r1]
         )
 
     def __len__(self):
@@ -153,51 +151,48 @@ class Dataset_ETT_minute(Dataset):
         self.__read_data__()
 
     def __read_data__(self):
-        self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
-        # ETT_minute 划分：12 个月 × 4(分钟/小时)
         borders = [
             (0, 12 * 30 * 24 * 4),
             (12 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4),
             (12 * 30 * 24 * 4 + 4 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 8 * 30 * 24 * 4)
         ]
-        border1, border2 = borders[self.set_type]
+        b1, b2 = borders[self.set_type]
 
         if self.features in ('M', 'MS'):
             df_data = df_raw.iloc[:, 1:]
         else:
             df_data = df_raw[[self.target]]
+        df_data = df_data.select_dtypes(include=[np.number])
+        df_data = df_data.apply(pd.to_numeric, errors='coerce').fillna(0)
 
-        # 归一化
         if self.scale:
-            self.scaler.fit(df_data.iloc[borders[0][0]:borders[0][1]].values)
-            data = self.scaler.transform(df_data.values)
+            scaler = StandardScaler()
+            scaler.fit(df_data.iloc[borders[0][0]:borders[0][1]].values)
+            data = scaler.transform(df_data.values)
+            self.scaler = scaler
         else:
             data = df_data.values
 
-        # 时间戳特征
-        df_stamp = df_raw[['date']].iloc[border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp['date'])
-        data_stamp = _build_time_stamp(df_stamp['date'], self.freq, self.timeenc)
+        df_stamp = pd.to_datetime(df_raw['date'].iloc[b1:b2])
+        data_stamp = _build_time_stamp(df_stamp, self.freq, self.timeenc)
 
-        self.data_x = data[border1:border2]
+        self.data_x = data[b1:b2]
         self.data_y = self.data_x
         self.data_stamp = data_stamp
 
-        # 自动缩减窗口
         _auto_adjust_window(self, len(self.data_x))
 
     def __getitem__(self, idx):
-        s_begin, s_end = idx, idx + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = r_begin + self.label_len + self.pred_len
+        s, e = idx, idx + self.seq_len
+        r0 = e - self.label_len
+        r1 = r0 + self.label_len + self.pred_len
         return (
             idx,
-            self.data_x[s_begin:s_end],
-            self.data_y[r_begin:r_end],
-            self.data_stamp[s_begin:s_end],
-            self.data_stamp[r_begin:r_end]
+            self.data_x[s:e],
+            self.data_y[r0:r1],
+            self.data_stamp[s:e],
+            self.data_stamp[r0:r1]
         )
 
     def __len__(self):
@@ -233,18 +228,15 @@ class Dataset_Custom(Dataset):
         self.__read_data__()
 
     def __read_data__(self):
-        self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
 
         # ----- date 列保障 -----
         cols = list(df_raw.columns)
         if self.target in cols:
             cols.remove(self.target)
-
         if 'date' in cols:
             cols.remove('date')
         else:
-            # 自动生成等间隔日期；若超出 Timestamp 范围则退化为 int-index
             freq_map = {'h': 'H', 't': 'T', 's': 'S',
                         'd': 'D', 'w': 'W',
                         'm': 'M', 'q': 'Q', 'y': 'A'}
@@ -261,42 +253,44 @@ class Dataset_Custom(Dataset):
 
         # ----- split -----
         borders = _split_by_ratio(len(df_raw), self.train_ratio, 0.2)
-        border1, border2 = borders[self.set_type]
+        b1, b2 = borders[self.set_type]
 
         # ----- 数值 -----
         if self.features in ('M', 'MS'):
             df_data = df_raw.iloc[:, 1:]
         else:
             df_data = df_raw[[self.target]]
+        df_data = df_data.select_dtypes(include=[np.number])
+        df_data = df_data.apply(pd.to_numeric, errors='coerce').fillna(0)
 
         if self.scale:
-            self.scaler.fit(df_data.iloc[borders[0][0]:borders[0][1]].values)
-            data = self.scaler.transform(df_data.values)
+            scaler = StandardScaler()
+            scaler.fit(df_data.iloc[borders[0][0]:borders[0][1]].values)
+            data = scaler.transform(df_data.values)
+            self.scaler = scaler
         else:
             data = df_data.values
 
         # ----- 时间 -----
-        df_stamp = df_raw[['date']]
-        df_stamp['date'] = pd.to_datetime(df_stamp['date'])
-        data_stamp = _build_time_stamp(df_stamp['date'], self.freq, self.timeenc)
+        df_stamp = pd.to_datetime(df_raw['date'])
+        data_stamp = _build_time_stamp(df_stamp, self.freq, self.timeenc)
 
         # ----- 保存 -----
-        self.data_x = data[border1:border2]
+        self.data_x = data[b1:b2]
         self.data_y = self.data_x
-        self.data_stamp = data_stamp[border1:border2]
+        self.data_stamp = data_stamp[b1:b2]
 
-        # 自动缩小窗口
         _auto_adjust_window(self, len(self.data_x))
 
     def __getitem__(self, idx):
-        s_begin, s_end = idx, idx + self.seq_len
-        r_begin = s_end - self.label_len
+        s, e = idx, idx + self.seq_len
+        r_begin = e - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
         return (
             idx,
-            self.data_x[s_begin:s_end],
+            self.data_x[s:e],
             self.data_y[r_begin:r_end],
-            self.data_stamp[s_begin:s_end],
+            self.data_stamp[s:e],
             self.data_stamp[r_begin:r_end]
         )
 
