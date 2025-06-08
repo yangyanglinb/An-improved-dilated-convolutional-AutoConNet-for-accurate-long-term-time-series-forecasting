@@ -2,66 +2,68 @@ import numpy as np
 import torch
 from utils.dtwloss.dilate_loss import dilate_loss
 
-def RSE(pred, true):
-    return np.sqrt(np.sum((true - pred) ** 2)) / np.sqrt(np.sum((true - true.mean()) ** 2))
+# 防止除零和空数组
+EPS = 1e-8
 
+def RSE(pred, true):
+    if pred.size == 0:
+        return np.nan
+    return np.sqrt(np.sum((true - pred) ** 2)) / np.sqrt(np.sum((true - true.mean()) ** 2) + EPS)
 
 def CORR(pred, true):
+    if pred.size == 0:
+        return np.nan
     u = ((true - true.mean(0)) * (pred - pred.mean(0))).sum(0)
-    d = np.sqrt(((true - true.mean(0)) ** 2 * (pred - pred.mean(0)) ** 2).sum(0))
+    d = np.sqrt(((true - true.mean(0))**2 * (pred - pred.mean(0))**2).sum(0) + EPS)
     return (u / d).mean(-1)
 
-
 def MAE(pred, true):
+    if pred.size == 0:
+        return np.nan
     return np.mean(np.abs(pred - true))
 
-
 def MSE(pred, true):
-    return np.mean((pred - true) ** 2)
-
+    if pred.size == 0:
+        return np.nan
+    return np.mean((pred - true)**2)
 
 def RMSE(pred, true):
-    return np.sqrt(MSE(pred, true))
-
+    mse = MSE(pred, true)
+    return np.sqrt(mse) if not np.isnan(mse) else np.nan
 
 def MAPE(pred, true):
-    return np.mean(np.abs((pred - true) / true))
-
+    if pred.size == 0:
+        return np.nan
+    return np.mean(np.abs(pred - true) / (np.abs(true) + EPS)) * 100
 
 def MSPE(pred, true):
-    return np.mean(np.square((pred - true) / true))
-
+    if pred.size == 0:
+        return np.nan
+    return np.mean(((pred - true) / (np.abs(true) + EPS))**2) * 100
 
 def metric(pred, true):
-    mae = MAE(pred, true)
-    mse = MSE(pred, true)
+    mae  = MAE(pred, true)
+    mse  = MSE(pred, true)
     rmse = RMSE(pred, true)
     mape = MAPE(pred, true)
     mspe = MSPE(pred, true)
-
     return mae, mse, rmse, mape, mspe
 
-
 def shape_metric(pred, true, batch_size=100):
-    dilate_e = 0.0
-    shape_e = 0.0
-    temp_e = 0.0
-    pred = torch.tensor(pred).cuda()
-    true = torch.tensor(true).cuda()
-    for st in range(0, pred.shape[0], batch_size):
-        st = st
-        ed = st + batch_size
-        # print(st, ed)
-        sub_pred = pred[st:ed]
-        sub_true = true[st:ed]
-        n_data = sub_true.shape[0]
+    if pred.shape[0] == 0:
+        return np.nan, np.nan, np.nan
+
+    pred_t = torch.tensor(pred).cuda()
+    true_t = torch.tensor(true).cuda()
+    n_total = pred.shape[0]
+
+    dilate_e = shape_e = temp_e = 0.0
+    for st in range(0, n_total, batch_size):
+        ed = min(st + batch_size, n_total)
         with torch.no_grad():
-            s_dilate_e, s_shape_DTW, s_temporal_DTW = dilate_loss(sub_pred, sub_true, 0.5, 0.01, 'cuda')
+            d_e, s_dtw, t_dtw = dilate_loss(pred_t[st:ed], true_t[st:ed], 0.5, 0.01, 'cuda')
+            dilate_e += d_e.cpu().item() * (ed - st)
+            shape_e  += s_dtw.cpu().item() * (ed - st)
+            temp_e   += t_dtw.cpu().item() * (ed - st)
 
-            dilate_e += s_dilate_e.cpu().item() * n_data
-            shape_e += s_shape_DTW.cpu().item() * n_data
-            temp_e += s_temporal_DTW.cpu().item() * n_data
-
-    return dilate_e/pred.shape[0], shape_e/pred.shape[0], temp_e/pred.shape[0]
-
-
+    return dilate_e / n_total, shape_e / n_total, temp_e / n_total
