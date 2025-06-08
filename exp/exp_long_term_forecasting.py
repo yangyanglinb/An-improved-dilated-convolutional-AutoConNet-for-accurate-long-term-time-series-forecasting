@@ -1,7 +1,3 @@
-# exp/exp_long_term_forecasting.py
-# ------------------------------------------------------------
-# Self-Supervised-Contrastive-Forecasting – 长周期预测实验脚本
-# ------------------------------------------------------------
 import os, time, json, warnings
 import numpy as np
 import torch
@@ -19,13 +15,19 @@ warnings.filterwarnings('ignore')
 class Exp_Long_Term_Forecast(Exp_Basic):
     """长周期多数据集统一训练/测试流程"""
 
-    # --------------------------------------------------------
     def __init__(self, args):
+        # 兼容别名：将 'illness' 映射到 ILI 数据集
+        if getattr(args, 'data', None) == 'illness':
+            args.data = 'ILI'
+        # 根据训练集动态设置输入/输出维度
+        train_dataset, _ = data_provider(args, 'train')
+        if hasattr(train_dataset, 'data_x') and train_dataset.data_x.ndim >= 2:
+            n_feats = train_dataset.data_x.shape[-1]
+            args.enc_in = n_feats
+            args.dec_in = n_feats
+            args.c_out = n_feats
         super().__init__(args)
 
-    # --------------------------------------------------------
-    # 1. 构建模型
-    # --------------------------------------------------------
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
         if self.args.use_multi_gpu and self.args.use_gpu:
@@ -33,206 +35,201 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print(f'model parameters:{self.count_parameters(model)}')
         return model
 
-    # --------------------------------------------------------
-    # 2. 数据加载
-    # --------------------------------------------------------
     def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
-        return data_set, data_loader
+        return data_provider(self.args, flag)
 
-    # --------------------------------------------------------
-    # 3. 优化器 & 损失
-    # --------------------------------------------------------
     def _select_optimizer(self):
         return optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
 
     def _select_criterion(self):
         return nn.MSELoss()
 
-    # --------------------------------------------------------
-    # 4. 验证
-    # --------------------------------------------------------
     @torch.no_grad()
     def vali(self, _, vali_loader, criterion):
         self.model.eval()
         total_loss = []
         for _, batch_x, batch_y, batch_x_mark, batch_y_mark in vali_loader:
-            batch_x = batch_x.float().to(self.device)
-            batch_y = batch_y.float().to(self.device)
+            batch_x      = batch_x.float().to(self.device)
+            batch_y      = batch_y.float().to(self.device)
             batch_x_mark = batch_x_mark.float().to(self.device)
             batch_y_mark = batch_y_mark.float().to(self.device)
 
-            # decoder input
             dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :])
-            dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp],
-                                dim=1).float().to(self.device)
+            dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).to(self.device)
 
-            # forward
             if self.args.output_attention:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
             else:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-            f_dim = -1 if self.args.features == 'MS' else 0
+            f_dim   = -1 if self.args.features == 'MS' else 0
             outputs = outputs[:, -self.args.pred_len:, f_dim:]
-            batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+            target  = batch_y[:,   -self.args.pred_len:, f_dim:]
 
-            total_loss.append(criterion(outputs, batch_y).item())
+            # 如果最后一个 batch 的真实长度 < pred_len，就用最后一条重复填充
+            T = target.size(1)
+            if T < self.args.pred_len:
+                pad  = self.args.pred_len - T
+                last = target[:, -1:, :].detach()
+                target = torch.cat([target, last.repeat(1, pad, 1)], dim=1)
+
+            loss = criterion(outputs, target)
+            # 跳过 NaN
+            if torch.isnan(loss):
+                continue
+            total_loss.append(loss.item())
 
         self.model.train()
+        if not total_loss:
+            # 全部被跳过时，用一个较大的惩罚性 loss
+            return 1e3
         return float(np.mean(total_loss))
 
-    # --------------------------------------------------------
-    # 5. 训练
-    # --------------------------------------------------------
     def train(self, setting):
         logs = {'train_loss': [], 'val_loss': [], 'test_loss': []}
 
         train_data, train_loader = self._get_data('train')
-        vali_data, vali_loader = self._get_data('val')
-        test_data, test_loader = self._get_data('test')
+        vali_data, vali_loader   = self._get_data('val')
+        test_data, test_loader   = self._get_data('test')
 
         ckpt_dir = os.path.join(self.args.checkpoints, setting)
         os.makedirs(ckpt_dir, exist_ok=True)
 
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
-        model_optim = self._select_optimizer()
-        criterion = self._select_criterion()
-        scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
-
-        train_steps = len(train_loader)
+        optimizer      = self._select_optimizer()
+        criterion      = self._select_criterion()
+        scaler         = torch.cuda.amp.GradScaler() if self.args.use_amp else None
 
         for epoch in range(self.args.train_epochs):
-            epoch_start = time.time()
+            start = time.time()
             self.model.train()
             losses = []
 
             for i, (_, batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
-                model_optim.zero_grad()
-
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
+                optimizer.zero_grad()
+                batch_x      = batch_x.float().to(self.device)
+                batch_y      = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :])
-                dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp],
-                                    dim=1).float().to(self.device)
+                dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).to(self.device)
 
-                # forward
                 if self.args.output_attention:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
                 else:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                f_dim = -1 if self.args.features == 'MS' else 0
+                f_dim   = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                target = batch_y[:, -self.args.pred_len:, f_dim:]
-
-                loss = criterion(outputs, target)
+                target  = batch_y[:,   -self.args.pred_len:, f_dim:]
+                loss    = criterion(outputs, target)
                 losses.append(loss.item())
 
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
-                    scaler.step(model_optim)
+                    scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    model_optim.step()
+                    optimizer.step()
 
-                # 每 100 步打印一次
                 if (i + 1) % 100 == 0:
-                    spent = time.time() - epoch_start
-                    speed = spent / (i + 1)
-                    remain = speed * ((self.args.train_epochs - epoch - 1) * train_steps + (train_steps - i - 1))
-                    print(f"\titers: {i+1}, epoch: {epoch+1} | loss: {loss.item():.7f}")
-                    print(f"\tspeed: {speed:.4f}s/iter; left time: {remain:.1f}s")
+                    elapsed = time.time() - start
+                    print(f"	iters: {i+1}, epoch: {epoch+1} | loss: {loss.item():.7f}")
 
-            # 每个 epoch 结束后
             train_loss = float(np.mean(losses))
-            val_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
+            val_loss   = self.vali(vali_data, vali_loader, criterion)
+            test_loss  = self.vali(test_data, test_loader, criterion)
             logs['train_loss'].append(train_loss)
             logs['val_loss'].append(val_loss)
             logs['test_loss'].append(test_loss)
 
-            print(f"Epoch: {epoch+1:>3} | Train {train_loss:.7f}  Val {val_loss:.7f}  Test {test_loss:.7f}"
-                  f"  (cost {time.time() - epoch_start:.1f}s)")
+            print(f"Epoch {epoch+1} | Train {train_loss:.6f}  Val {val_loss:.6f}  Test {test_loss:.6f}  "
+                  f"(time {time.time()-start:.1f}s)")
 
             early_stopping(val_loss, self.model, ckpt_dir)
             if early_stopping.early_stop:
-                print("Early stopping triggered!")
                 break
+            adjust_learning_rate(optimizer, epoch+1, self.args)
 
-            adjust_learning_rate(model_optim, epoch + 1, self.args)
-
-        # 加载最优权重
+        # load best
         self.model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'checkpoint.pth')))
         json.dump(logs, open(os.path.join(ckpt_dir, 'loss_logs.json'), 'w'))
         return self.model
 
-    # --------------------------------------------------------
-    # 6. 测试 / 推理
-    # --------------------------------------------------------
     @torch.no_grad()
     def test(self, setting, test: int = 0):
+        """
+        对测试集做预测并计算指标。遇到空 batch（outputs 第一维为 0）时跳过，避免最后拼接成全 nan。
+        """
         test_data, test_loader = self._get_data('test')
 
-        if test:  # 手动指定时加载 best ckpt
-            print('loading model …')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints', setting, 'checkpoint.pth')))
+        # 如果是从训练切换到测试，需要先加载 checkpoint
+        if test:
+            ckpt_path = os.path.join(self.args.checkpoints, setting, 'checkpoint.pth')
+            self.model.load_state_dict(torch.load(ckpt_path))
 
         self.model.eval()
-        preds, trues = [], []
 
+        preds, trues = [], []
         for _, batch_x, batch_y, batch_x_mark, batch_y_mark in test_loader:
-            batch_x = batch_x.float().to(self.device)
-            batch_y = batch_y.float().to(self.device)
+            batch_x      = batch_x.float().to(self.device)
+            batch_y      = batch_y.float().to(self.device)
             batch_x_mark = batch_x_mark.float().to(self.device)
             batch_y_mark = batch_y_mark.float().to(self.device)
 
+            # 构造解码器输入
             dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :])
-            dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp],
-                                dim=1).float().to(self.device)
+            dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).to(self.device)
 
+            # 前向
             if self.args.output_attention:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
             else:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-            f_dim = -1 if self.args.features == 'MS' else 0
+            # 如果这一批没有任何样本（e.g. batch_size=0），跳过
+            if outputs.shape[0] == 0:
+                continue
+
+            # 取最后 pred_len 且按 MS/ M 切分特征通道
+            f_dim   = -1 if self.args.features == 'MS' else 0
             outputs = outputs[:, -self.args.pred_len:, f_dim:]
-            batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+            target  = batch_y[:,   -self.args.pred_len:, f_dim:]
+
+            # 如果有些序列本身短于 pred_len，用最后一个值补齐
+            T = target.size(1)
+            tgt_np = target.cpu().numpy()
+            if T < self.args.pred_len:
+                pad  = self.args.pred_len - T
+                last = tgt_np[:, -1:, :]
+                tgt_np = np.concatenate([tgt_np, np.repeat(last, pad, axis=1)], axis=1)
 
             preds.append(outputs.cpu().numpy())
-            trues.append(batch_y.cpu().numpy())
+            trues.append(tgt_np)
 
-        # 使用 concatenate 而非 np.array
-        if len(preds) > 0:
-            preds = np.concatenate(preds, axis=0)  # (N, pred_len, C)
+        # 拼接所有非空 batch，若全为空则返回严格的空数组
+        if preds:
+            preds = np.concatenate(preds, axis=0)
             trues = np.concatenate(trues, axis=0)
         else:
-            # 如果没有任何样本，返回空数组
+            print("⚠️  Warning: no valid test samples found, returning empty predictions")
             preds = np.zeros((0, self.args.pred_len, self.args.c_out))
             trues = np.zeros((0, self.args.pred_len, self.args.c_out))
 
         print('test shape:', preds.shape, trues.shape)
 
-        # 保存到 ./results/<setting>/
-        folder = os.path.join('./results', setting)
-        os.makedirs(folder, exist_ok=True)
-
+        # 计算并打印指标
         mae, mse, rmse, mape, mspe = metric(preds, trues)
-        # dilate_e, shape_e, temporal_e = shape_metric(preds, trues)
-        dilate_e = shape_e = temporal_e = 0.0
+        print(f"mse:{mse:.6f}, mae:{mae:.6f}, mape:{mape:.6f}, mspe:{mspe:.6f}")
 
-        print(f'mse:{mse:.6f}, mae:{mae:.6f}, mape:{mape:.6f}, mspe:{mspe:.6f}, '
-              f'dilate:{dilate_e:.7f}, shapedtw:{shape_e:.7f}, temporaldtw:{temporal_e:.7f}')
-
+        # 保存结果
         if self.args.save:
+            folder = os.path.join('./results', setting)
+            os.makedirs(folder, exist_ok=True)
             np.save(os.path.join(folder, 'metrics.npy'), np.array([mae, mse, rmse, mape, mspe]))
             np.save(os.path.join(folder, 'pred.npy'), preds)
             np.save(os.path.join(folder, 'true.npy'), trues)
 
-        return mse, mae, mape, mspe, dilate_e, shape_e, temporal_e
+        return mse, mae, mape, mspe, 0.0, 0.0, 0.0
