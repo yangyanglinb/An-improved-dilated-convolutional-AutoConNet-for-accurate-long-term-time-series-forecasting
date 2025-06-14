@@ -29,7 +29,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         super().__init__(args)
 
     def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
+        model_cls = self.model_dict.get(self.args.model)
+        if not model_cls:
+            raise ValueError(f"Model {self.args.model} is not registered!")
+        model = model_cls.Model(self.args).float()
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         print(f'model parameters:{self.count_parameters(model)}')
@@ -159,14 +162,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return self.model
 
     @torch.no_grad()
-    def test(self, setting, test: int = 0):
+    def test(self, setting, do_test: int = 0):
         """
         对测试集做预测并计算指标。遇到空 batch（outputs 第一维为 0）时跳过，避免最后拼接成全 nan。
         """
         test_data, test_loader = self._get_data('test')
 
         # 如果是从训练切换到测试，需要先加载 checkpoint
-        if test:
+        if do_test:
             ckpt_path = os.path.join(self.args.checkpoints, setting, 'checkpoint.pth')
             self.model.load_state_dict(torch.load(ckpt_path))
 
