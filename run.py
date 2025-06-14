@@ -42,7 +42,7 @@ if __name__ == '__main__':
                         help='task name, options:[long_term_forecast, short_term_forecast, imputation, classification, anomaly_detection]')
     parser.add_argument('--is_training', type=int, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='AutoConNet',
+    parser.add_argument('--model', type=str, required=True, default='AutoConNet_Improved',
                         help='model name, options: [AutoConNet]')
 
     # data loader
@@ -89,6 +89,7 @@ if __name__ == '__main__':
                         help='time features encoding, options:[timeF, fixed, learned]')
     parser.add_argument('--activation', type=str, default='gelu', help='activation')
     parser.add_argument('--output_attention', action='store_true', help='whether to output attention in ecoder')
+    parser.add_argument('--use_attention', action='store_true', help='whether to use attention mechanism')
 
     # optimization
     parser.add_argument('--num_workers', type=int, default=2, help='data loader num workers')
