@@ -78,6 +78,7 @@ python -u run.py \
     --train_epochs   "$EPOCH" \
     --model          "$MODEL_I" \
     --model_id       "$I_ID" \
+    --use_attention \
     --use_gpu        True \
     --gpu            0 \
     --num_workers    4 \
@@ -109,6 +110,7 @@ python -u run.py \
     --save \
     --model          "$MODEL_I" \
     --model_id       "$I_ID" \
+    --use_attention \
     --use_gpu        True \
     --gpu            0 \
     --num_workers    4
