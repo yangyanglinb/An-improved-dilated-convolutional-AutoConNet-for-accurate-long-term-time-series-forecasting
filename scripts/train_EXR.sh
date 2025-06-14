@@ -13,7 +13,7 @@ MODEL_I=AutoConNet_Improved
 
 CSV=results/compare_all.csv; mkdir -p results
 if [[ ! -f $CSV ]]; then
-    echo "time,dataset,..." > "$CSV"
+    echo "time,dataset,MSE_base,MSE_impr,MSE_drop(%),MAE_base,MAE_impr,MAE_drop(%),RMSE_base,RMSE_impr,RMSE_drop(%),MAPE_base,MAPE_impr,MAPE_drop(%)" > "$CSV"
 fi
 grab(){ grep -oP "$1:\s*\K[0-9.]+" "$2" | tail -1; }
 rmse(){ awk -v x="$1" 'BEGIN{ if(x==""||x=="nan"){printf "0.000000";} else {printf "%.6f", sqrt(x);} }'; }
@@ -71,6 +71,7 @@ python -u run.py \
     --train_epochs   "$EPOCH" \
     --model          "$MODEL_I" \
     --model_id       "$I_ID" \
+    --use_attention \
     --use_gpu        True \
     --gpu            0 \
     --num_workers    4 \
@@ -102,6 +103,7 @@ python -u run.py \
     --save \
     --model          "$MODEL_I" \
     --model_id       "$I_ID" \
+    --use_attention \
     --use_gpu        True \
     --gpu            0 \
     --num_workers    4
