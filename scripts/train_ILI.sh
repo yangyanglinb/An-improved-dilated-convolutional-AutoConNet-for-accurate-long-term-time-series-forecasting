@@ -15,7 +15,7 @@ MODEL_I=AutoConNet_Improved
 CSV=results/compare_all.csv
 mkdir -p results
 if [[ ! -f $CSV ]]; then
-    echo "time,dataset,b_mse,i_mse,mse_delta,b_mae,i_mae,mae_delta,b_rmse,i_rmse,rmse_delta,b_mape,i_mape,mape_delta" > "$CSV"
+    echo "time,dataset,MSE_base,MSE_impr,MSE_drop(%),MAE_base,MAE_impr,MAE_drop(%),RMSE_base,RMSE_impr,RMSE_drop(%),MAPE_base,MAPE_impr,MAPE_drop(%)" > "$CSV"
 fi
 
 DS=illness
@@ -75,6 +75,7 @@ python -u run.py \
     --train_epochs   "$EPOCH" \
     --model          "$MODEL_I" \
     --model_id       "$I_ID" \
+    --use_attention \
     --use_gpu        True \
     --gpu            0 \
     --num_workers    4 \
@@ -106,6 +107,7 @@ python -u run.py \
     --save \
     --model          "$MODEL_I" \
     --model_id       "$I_ID" \
+    --use_attention \
     --use_gpu        True \
     --gpu            0 \
     --num_workers    4
