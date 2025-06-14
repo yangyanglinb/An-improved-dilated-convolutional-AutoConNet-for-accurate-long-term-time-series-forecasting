@@ -305,3 +305,4 @@ class Model(nn.Module):
 
 
 series_decomp = SeriesDecomp
+
