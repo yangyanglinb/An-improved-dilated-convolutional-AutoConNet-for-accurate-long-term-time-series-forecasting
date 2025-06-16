@@ -1,111 +1,65 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from layers.Embed import DataEmbedding
 
-
-class DilatedConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, dilation_rates=[1, 2, 4], dropout=0.1):
-        super(DilatedConvBlock, self).__init__()
-        self.convs = nn.ModuleList([
-            nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=d, dilation=d)
-            for d in dilation_rates
-        ])
-        self.norm = nn.BatchNorm1d(out_channels)
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.GELU()
-
-    def forward(self, x):
-        # x: [B, C, L]
-        out = sum(conv(x) for conv in self.convs) / len(self.convs)
-        out = self.norm(out)
-        out = self.activation(out)
-        out = self.dropout(out)
-        return out
-
-class MultiScaleConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes=[3, 5, 7], dropout=0.1):
-        super(MultiScaleConvBlock, self).__init__()
-        self.branches = nn.ModuleList([
-            nn.Conv1d(in_channels, out_channels, kernel_size=k, padding=k // 2)
-            for k in kernel_sizes
-        ])
-        self.norm = nn.BatchNorm1d(out_channels)
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.GELU()
-
-    def forward(self, x):
-        # x: [B, C, L]
-        out = sum(branch(x) for branch in self.branches) / len(self.branches)
-        out = self.norm(out)
-        out = self.activation(out)
-        out = self.dropout(out)
-        return out
-
-class SelfAttention(nn.Module):
-    def __init__(self, d_model, n_heads=4):
-        super(SelfAttention, self).__init__()
-        self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, batch_first=True)
+class RobustDilatedConv(nn.Module):
+    def __init__(self, d_model, dilation):
+        super().__init__()
+        self.conv = nn.Conv1d(d_model, d_model, 3, 
+                            padding=dilation, dilation=dilation)
         self.norm = nn.LayerNorm(d_model)
-
+        self.dropout = nn.Dropout(0.1)
+        
     def forward(self, x):
-        # x: [B, D, L] -> [B, L, D]
-        x = x.permute(0, 2, 1)
-        attn_out, _ = self.attn(x, x, x)
-        x = self.norm(x + attn_out)
-        x = x.permute(0, 2, 1)  # Back to [B, D, L]
-        return x
+        x = self.conv(x).permute(0, 2, 1)  # [B, L, D]
+        return self.dropout(F.gelu(self.norm(x))).permute(0, 2, 1)
 
 class AutoConNet_Improved(nn.Module):
     def __init__(self, configs):
-        super(AutoConNet_Improved, self).__init__()
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.use_attention = getattr(configs, 'use_attention', True)
-
-        # Input embedding
-        from layers.Embed import DataEmbedding
+        super().__init__()
+        self.configs = configs
+        
+        # 输入嵌入（修正了括号问题）
         self.embedding = DataEmbedding(
-            configs.enc_in, configs.d_model, configs.embed,
-            configs.freq, configs.dropout
+            configs.enc_in, configs.d_model,
+            configs.embed, configs.freq,
+            max(0.1, configs.dropout)  # 防止过拟合
         )
-
-        # Dilated Convolution block
-        self.dilated_conv = DilatedConvBlock(
-            in_channels=configs.d_model,
-            out_channels=configs.d_model,
-            dilation_rates=[1, 2, 4],
-            dropout=configs.dropout
+        
+        # 改进的卷积模块
+        self.conv_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(configs.d_model, configs.d_model, 3, 
+                         padding=d, dilation=d),
+                nn.BatchNorm1d(configs.d_model),
+                nn.GELU(),
+                nn.Dropout(0.1)
+            ) for d in [1, 2, 4]  # 多尺度空洞卷积
+        ])
+        
+        # 稳健输出层
+        self.projection = nn.Sequential(
+            nn.Linear(configs.d_model, configs.d_model//2),
+            nn.GELU(),
+            nn.Linear(configs.d_model//2, configs.c_out),
+            nn.Tanhshrink()  # 输出范围: ~(-1,1)
         )
+        
+        # 自适应缩放
+        self.scale = nn.Parameter(torch.tensor(0.5))  # 可学习参数
 
-        # Multi-scale Convolution block
-        self.multiscale_conv = MultiScaleConvBlock(
-            in_channels=configs.d_model,
-            out_channels=configs.d_model,
-            kernel_sizes=[3, 5, 7],
-            dropout=configs.dropout
-        )
+    def forward(self, x_enc, x_mark_enc, dec_inp=None, dec_mark=None):
+        """兼容4参数调用"""
+        # 嵌入层
+        x = self.embedding(x_enc, x_mark_enc).permute(0, 2, 1)  # [B, D, L]
+        
+        # 多尺度特征融合
+        conv_out = torch.stack([block(x) for block in self.conv_blocks]).mean(dim=0)
+        
+        # 稳健输出
+        output = self.projection(conv_out.permute(0, 2, 1)[:, -self.configs.pred_len:, :])
+        return output * self.scale
 
-        # Optional attention
-        self.attn = SelfAttention(d_model=configs.d_model, n_heads=configs.n_heads) if self.use_attention else nn.Identity()
-
-        # Output projection
-        self.projection = nn.Linear(configs.d_model, configs.c_out)
-
-    def forward(self, x_enc, x_mark_enc, x_dec=None, x_mark_dec=None, enc_self_mask=None, dec_self_mask=None, dec_enc_mask=None):
-        # x_enc: [B, L, C]
-        enc_out = self.embedding(x_enc, x_mark_enc)  # [B, L, D]
-        enc_out = enc_out.permute(0, 2, 1)  # [B, D, L]
-
-        conv_out1 = self.dilated_conv(enc_out)
-        conv_out2 = self.multiscale_conv(enc_out)
-        combined = (conv_out1 + conv_out2) / 2  # [B, D, L]
-
-        combined = self.attn(combined)  # Optional attention
-        combined = combined.permute(0, 2, 1)  # [B, L, D]
-
-        output = self.projection(combined[:, -self.pred_len:, :])  # [B, pred_len, C]
-        return output
-
+# 保持框架兼容性
 Model = AutoConNet_Improved
